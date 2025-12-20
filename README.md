@@ -1,4 +1,4 @@
-# Project Starter
+# Elizaos Project Starter
 
 This is the starter template for ElizaOS projects.
 
