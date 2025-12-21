@@ -8,3 +8,6 @@
 .env.old
 .env.example
 .env.backup.local
+node_modules
+.elizadb
+.eliza/data
