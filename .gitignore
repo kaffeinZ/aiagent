@@ -11,3 +11,43 @@
 node_modules
 .elizadb
 .eliza/data
+
+# Build artifacts (may contain bundled secrets)
+dist/
+build/
+*.tsbuildinfo
+
+# Log files (may contain sensitive information)
+*.log
+logs/
+
+# Cache files (may contain sensitive data)
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+
+# IDE files (may contain paths or secrets)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Coverage reports (may contain code paths)
+coverage/
+.nyc_output/
+*.lcov
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+.tmp/
