@@ -128,10 +128,15 @@ export class PriceFeedService extends Service {
 
       logger.debug({ url, symbol }, 'Fetching price from CoinGecko');
 
-      const response = await fetch(url, {
+      // Add cache-busting to ensure fresh data
+      const urlWithCacheBuster = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
+      
+      const response = await fetch(urlWithCacheBuster, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
         },
       });
 
@@ -167,7 +172,7 @@ export class PriceFeedService extends Service {
         return null;
       }
 
-      return {
+      const priceData = {
         symbol: normalizedSymbol,
         name: normalizedSymbol,
         price: coinData.usd || 0,
@@ -175,9 +180,18 @@ export class PriceFeedService extends Service {
         priceChangePercent24h: coinData.usd_24h_change || 0,
         marketCap: coinData.usd_market_cap || undefined,
         volume24h: coinData.usd_24h_vol || undefined,
-        source: 'coingecko',
+        source: 'coingecko' as const,
         timestamp: Date.now(),
       };
+      
+      logger.info({ 
+        symbol, 
+        price: priceData.price, 
+        timestamp: new Date(priceData.timestamp).toISOString(),
+        fetchedAt: new Date().toISOString()
+      }, 'Fetched fresh price data from CoinGecko');
+      
+      return priceData;
     } catch (error) {
       logger.error({ error, symbol }, 'Error fetching from CoinGecko');
       return null;
@@ -238,11 +252,16 @@ export class PriceFeedService extends Service {
 
       logger.debug({ url, symbol, cmcSymbol }, 'Fetching price from CoinMarketCap');
 
-      const response = await fetch(url, {
+      // Add cache-busting to ensure fresh data
+      const urlWithCacheBuster = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
+      
+      const response = await fetch(urlWithCacheBuster, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
           'X-CMC_PRO_API_KEY': this.coinmarketcapApiKey,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
         },
       });
 
@@ -289,7 +308,7 @@ export class PriceFeedService extends Service {
         return null;
       }
 
-      return {
+      const priceData = {
         symbol: cmcSymbol,
         name: coinData.name || cmcSymbol,
         price: quote.price || 0,
@@ -297,9 +316,18 @@ export class PriceFeedService extends Service {
         priceChangePercent24h: quote.percent_change_24h || 0,
         marketCap: quote.market_cap || undefined,
         volume24h: quote.volume_24h || undefined,
-        source: 'coinmarketcap',
+        source: 'coinmarketcap' as const,
         timestamp: Date.now(),
       };
+      
+      logger.info({ 
+        symbol, 
+        price: priceData.price, 
+        timestamp: new Date(priceData.timestamp).toISOString(),
+        fetchedAt: new Date().toISOString()
+      }, 'Fetched fresh price data from CoinMarketCap');
+      
+      return priceData;
     } catch (error) {
       logger.error({ error, symbol }, 'Error fetching from CoinMarketCap');
       return null;
@@ -350,10 +378,15 @@ export class PriceFeedService extends Service {
 
       logger.debug({ url, symbols }, 'Fetching batch prices from CoinGecko');
 
-      const response = await fetch(url, {
+      // Add cache-busting to ensure fresh data
+      const urlWithCacheBuster = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
+      
+      const response = await fetch(urlWithCacheBuster, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
         },
       });
 

@@ -323,26 +323,39 @@ const getPriceAction: Action = {
         };
       }
 
-      const response = priceFeedService.formatPriceData(priceData);
+      // Return structured data for LLM analysis instead of pre-formatted text
+      // The LLM will analyze this data and provide insights
+      const fetchTime = new Date(priceData.timestamp).toLocaleString();
+      const dataSummary = `Price data retrieved for ${symbol} at ${fetchTime}: Current price $${priceData.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}, 24h change ${priceData.priceChangePercent24h >= 0 ? '+' : ''}${priceData.priceChangePercent24h.toFixed(2)}% (${priceData.priceChange24h >= 0 ? '+' : ''}$${priceData.priceChange24h.toFixed(2)}), Market Cap: ${priceData.marketCap ? '$' + priceData.marketCap.toLocaleString('en-US') : 'N/A'}, 24h Volume: ${priceData.volume24h ? '$' + priceData.volume24h.toLocaleString('en-US') : 'N/A'}`;
 
-      logger.info({ symbol, price: priceData.price }, 'Price fetched successfully');
+      logger.info({ 
+        symbol, 
+        price: priceData.price, 
+        timestamp: priceData.timestamp,
+        fetchTime: new Date(priceData.timestamp).toISOString(),
+        isRecent: Date.now() - priceData.timestamp < 60000 // Less than 1 minute old
+      }, 'Price fetched successfully - fresh data');
 
-      if (callback) {
-        await callback({
-          text: response,
-          actions: ['GET_PRICE'],
-          source: message.content.source,
-        });
-      }
+      // Don't use callback here - let the LLM process the data and generate analysis
+      // The LLM will receive this data and can provide insights, opinions, and analysis
 
       return {
-        text: response,
+        text: dataSummary, // Provide data summary, but LLM should analyze it
         success: true,
         data: {
           actions: ['GET_PRICE'],
           symbol,
           priceData,
           source: message.content.source,
+          // Include raw data for LLM analysis
+          analysisContext: {
+            price: priceData.price,
+            change24h: priceData.priceChange24h,
+            changePercent24h: priceData.priceChangePercent24h,
+            marketCap: priceData.marketCap,
+            volume24h: priceData.volume24h,
+            timestamp: priceData.timestamp,
+          },
         },
       };
     } catch (error) {
@@ -519,33 +532,40 @@ const getMultiplePricesAction: Action = {
         };
       }
 
-      const response =
-        `**Cryptocurrency Prices**\n\n` +
-        priceDataList
-          .map((priceData) => priceFeedService.formatPriceData(priceData))
-          .join('\n\n---\n\n');
+      // Return structured data for LLM analysis instead of pre-formatted text
+      // The LLM will analyze this data and provide insights, comparisons, and opinions
+      const dataSummary = `Retrieved price data for ${priceDataList.length} cryptocurrencies:\n\n` +
+        priceDataList.map((pd) => 
+          `${pd.symbol.toUpperCase()}: $${pd.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })} (${pd.priceChangePercent24h >= 0 ? '+' : ''}${pd.priceChangePercent24h.toFixed(2)}% in 24h)`
+        ).join('\n');
 
       logger.info(
         { count: priceDataList.length },
         'Multiple prices fetched successfully'
       );
 
-      if (callback) {
-        await callback({
-          text: response,
-          actions: ['GET_MULTIPLE_PRICES'],
-          source: message.content.source,
-        });
-      }
+      // Don't use callback here - let the LLM process the data and generate analysis
+      // The LLM will receive this data and can provide insights, comparisons, and market analysis
 
       return {
-        text: response,
+        text: dataSummary, // Provide data summary, but LLM should analyze it
         success: true,
         data: {
           actions: ['GET_MULTIPLE_PRICES'],
           symbols: symbolsToFetch,
           priceDataList,
           source: message.content.source,
+          // Include raw data for LLM analysis
+          analysisContext: {
+            prices: priceDataList.map((pd) => ({
+              symbol: pd.symbol,
+              price: pd.price,
+              change24h: pd.priceChange24h,
+              changePercent24h: pd.priceChangePercent24h,
+              marketCap: pd.marketCap,
+              volume24h: pd.volume24h,
+            })),
+          },
         },
       };
     } catch (error) {
