@@ -189,8 +189,33 @@ const checkBalanceAction: Action = {
         };
       }
 
-      const hasEvm = walletService.hasEvmWallet();
-      const hasSolana = walletService.hasSolanaWallet();
+      // Check wallet initialization status
+      // The service might be returned as a generic Service, so we need to safely access methods
+      let hasEvm = false;
+      let hasSolana = false;
+      
+      try {
+        // Try to call the methods if they exist
+        if (typeof (walletService as any).hasEvmWallet === 'function') {
+          hasEvm = (walletService as any).hasEvmWallet();
+        } else {
+          // Fallback: check if EVM wallet exists by trying to get address
+          const evmAddress = (walletService as any).getEvmAddress?.();
+          hasEvm = !!evmAddress;
+        }
+        
+        if (typeof (walletService as any).hasSolanaWallet === 'function') {
+          hasSolana = (walletService as any).hasSolanaWallet();
+        } else {
+          // Fallback: check if Solana wallet exists by trying to get address
+          const solanaAddress = (walletService as any).getSolanaAddress?.();
+          hasSolana = !!solanaAddress;
+        }
+      } catch (error) {
+        logger.warn({ error }, 'Error checking wallet status, assuming no wallets initialized');
+        hasEvm = false;
+        hasSolana = false;
+      }
 
       if (!hasEvm && !hasSolana) {
         const errorMsg = 'No wallets initialized. Please configure PRIVATE_KEY (EVM) or SOLANA_PRIVATE_KEY (Solana) in your environment variables.';

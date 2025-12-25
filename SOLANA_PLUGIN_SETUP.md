@@ -52,9 +52,15 @@ SLIPPAGE=1
 # Get one at: https://www.helius.dev/
 HELIUS_API_KEY=your_helius_api_key_here
 
-# Birdeye API key (for price feeds and analytics)
-# Get one at: https://birdeye.so/
-BIRDEYE_API_KEY=your_birdeye_api_key_here
+# Birdeye API key (for price feeds and analytics - OPTIONAL)
+# ⚠️ NOTE: This is optional. The plugin works fine without it, but you may see 401 errors in logs.
+# If you see "HTTP error! status: 401" from birdeye, you can safely ignore it.
+# The agent will still function normally - you just won't get enhanced price data.
+# To get an API key (if available):
+# 1. Visit https://birdeye.so/
+# 2. Sign up/login and look for Developer/API section in dashboard
+# 3. Note: API access may require paid plan or be invite-only
+# BIRDEYE_API_KEY=your_birdeye_api_key_here
 ```
 
 ### 2. Plugin Registration
@@ -225,12 +231,14 @@ Ask your agent:
   - Verify transaction parameters are correct
   - Try a different RPC endpoint
 
-### "Unable to fetch price data"
-- **Cause**: API key issues or service unavailable
+### "Unable to fetch price data" or "HTTP error! status: 401" from Birdeye
+- **Cause**: Missing or invalid `BIRDEYE_API_KEY`, or API access not available
 - **Fix**:
-  - Verify `BIRDEYE_API_KEY` is set and valid (if using price feeds)
-  - Check network connectivity
-  - Try a different price feed service
+  - ⚠️ **This is safe to ignore** - The plugin works fine without Birdeye API key
+  - The 401 errors are non-critical and won't affect core functionality (swaps, transfers, etc.)
+  - If you want to suppress the errors, you can either:
+    - Get a Birdeye API key from https://birdeye.so/ (may require paid plan)
+    - Or simply ignore the error messages - they're just warnings about missing price feed data
 
 ## Security Notes
 
