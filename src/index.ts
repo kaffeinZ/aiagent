@@ -6,6 +6,7 @@ import starterPlugin from './plugin.ts';
 import { character } from './character.ts';
 import falaiPlugin from '../plugin-falai/src/plugin.ts';
 import traderPlugin from '../plugin-trader/src/plugin.ts';
+import priceFeedPlugin from '../plugin-pricefeed/src/plugin.ts';
 
 const initCharacter = ({ runtime }: { runtime: IAgentRuntime }) => {
   logger.info('Initializing character');
@@ -17,7 +18,7 @@ export const projectAgent: ProjectAgent = {
   init: async (runtime: IAgentRuntime) => {
     initCharacter({ runtime });
   },
-  plugins: [starterPlugin, falaiPlugin, traderPlugin],
+  plugins: [starterPlugin, falaiPlugin, traderPlugin, priceFeedPlugin],
 };
 
 const project: Project = {

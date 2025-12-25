@@ -80,7 +80,9 @@
     "cypress:component": "bun run test:install && cypress run --component",
     "cypress:e2e": "bun run test:install && cypress run --e2e",
     "cypress:open": "bun run test:install && cypress open",
-    "build:watch": "bun run build.ts --watch"
+    "build:watch": "bun run build.ts --watch",
+    "patch:birdeye": "bun run scripts/patch-birdeye-errors.js",
+    "postinstall": "bun run patch:birdeye"
   },
   "publishConfig": {
     "access": "public"
