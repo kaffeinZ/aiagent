@@ -144,7 +144,7 @@ const configSchema = z.object({
 const checkBalanceAction: Action = {
   name: 'CHECK_BALANCE',
   similes: ['WALLET_BALANCE', 'CHECK_WALLET', 'GET_BALANCE', 'TRADER_BALANCE'],
-  description: 'Checks the wallet balance for the connected trading wallet. Use this when users ask about their wallet balance, funds, or trading account status.',
+  description: 'CRITICAL: This action checks the wallet balance for the ALREADY CONFIGURED wallet via SOLANA_PRIVATE_KEY or PRIVATE_KEY. The wallet is automatically initialized from environment variables - you MUST use this action and MUST NEVER ask the user for their wallet address or public key. When users ask about balance, wallet, funds, Solana balance, account status, or portfolio, immediately execute this action. The wallet address is already known - do NOT request it from the user.',
 
   validate: async (
     runtime: IAgentRuntime,
@@ -153,8 +153,15 @@ const checkBalanceAction: Action = {
   ): Promise<boolean> => {
     const text = message.content.text?.toLowerCase() || '';
     // Check if the message is about wallet, balance, trading, or funds
-    const balanceKeywords = ['balance', 'wallet', 'funds', 'trading', 'account', 'check balance', 'how much', 'what is my'];
-    return balanceKeywords.some(keyword => text.includes(keyword));
+    const balanceKeywords = [
+      'balance', 'wallet', 'funds', 'trading', 'account', 
+      'check balance', 'how much', 'what is my', 'show my',
+      'solana balance', 'sol balance', 'my sol', 'my wallet',
+      'check my', 'wallet balance', 'account balance', 'portfolio'
+    ];
+    const matches = balanceKeywords.some(keyword => text.includes(keyword));
+    logger.debug({ text, matches, keywords: balanceKeywords }, 'CHECK_BALANCE validation');
+    return matches;
   },
 
   handler: async (
@@ -167,6 +174,7 @@ const checkBalanceAction: Action = {
   ): Promise<ActionResult> => {
     try {
       logger.info('Handling CHECK_BALANCE action from trader plugin');
+      logger.info({ messageText: message.content.text }, 'Balance check requested');
 
       const walletService = runtime.getService<WalletService>(WalletService.serviceType);
       
@@ -195,22 +203,28 @@ const checkBalanceAction: Action = {
       let hasSolana = false;
       
       try {
-        // Try to call the methods if they exist
-        if (typeof (walletService as any).hasEvmWallet === 'function') {
+        // First, try to get addresses directly (most reliable check)
+        const evmAddress = (walletService as any).getEvmAddress?.();
+        const solanaAddress = (walletService as any).getSolanaAddress?.();
+        
+        hasEvm = !!evmAddress;
+        hasSolana = !!solanaAddress;
+        
+        // If addresses don't exist, check the initialization flags as fallback
+        if (!hasEvm && typeof (walletService as any).hasEvmWallet === 'function') {
           hasEvm = (walletService as any).hasEvmWallet();
-        } else {
-          // Fallback: check if EVM wallet exists by trying to get address
-          const evmAddress = (walletService as any).getEvmAddress?.();
-          hasEvm = !!evmAddress;
+        }
+        if (!hasSolana && typeof (walletService as any).hasSolanaWallet === 'function') {
+          hasSolana = (walletService as any).hasSolanaWallet();
         }
         
-        if (typeof (walletService as any).hasSolanaWallet === 'function') {
-          hasSolana = (walletService as any).hasSolanaWallet();
-        } else {
-          // Fallback: check if Solana wallet exists by trying to get address
-          const solanaAddress = (walletService as any).getSolanaAddress?.();
-          hasSolana = !!solanaAddress;
-        }
+        // Log for debugging
+        logger.debug({ 
+          hasEvm, 
+          hasSolana, 
+          evmAddress: evmAddress?.substring(0, 10) + '...' || 'none',
+          solanaAddress: solanaAddress?.substring(0, 10) + '...' || 'none'
+        }, 'Wallet status check');
       } catch (error) {
         logger.warn({ error }, 'Error checking wallet status, assuming no wallets initialized');
         hasEvm = false;
@@ -218,6 +232,19 @@ const checkBalanceAction: Action = {
       }
 
       if (!hasEvm && !hasSolana) {
+        // Log detailed debugging info
+        logger.warn({ 
+          hasEvm, 
+          hasSolana,
+          walletServiceExists: !!walletService,
+          evmAddress: walletService?.getEvmAddress?.(),
+          solanaAddress: walletService?.getSolanaAddress?.(),
+          hasEvmWalletMethod: typeof (walletService as any)?.hasEvmWallet === 'function',
+          hasSolanaWalletMethod: typeof (walletService as any)?.hasSolanaWallet === 'function',
+          evmWalletFlag: (walletService as any)?.hasEvmWallet?.(),
+          solanaWalletFlag: (walletService as any)?.hasSolanaWallet?.(),
+        }, 'No wallets detected - detailed debug info');
+        
         const errorMsg = 'No wallets initialized. Please configure PRIVATE_KEY (EVM) or SOLANA_PRIVATE_KEY (Solana) in your environment variables.';
         logger.warn(errorMsg);
         
@@ -320,7 +347,7 @@ const checkBalanceAction: Action = {
       {
         name: '{{name2}}',
         content: {
-          text: 'Your EVM wallet balance:\nAddress: 0x...\nBalance: 1.5 ETH\nBlockchain: EVM',
+          text: 'Your Solana Wallet:\nAddress: 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM\nBalance: 2.5 SOL\nBlockchain: Solana',
           actions: ['CHECK_BALANCE'],
         },
       },
@@ -329,13 +356,28 @@ const checkBalanceAction: Action = {
       {
         name: '{{name1}}',
         content: {
-          text: 'Check my trading account',
+          text: 'Check my Solana balance',
         },
       },
       {
         name: '{{name2}}',
         content: {
-          text: 'Your wallet balance:\nAddress: 0x...\nBalance: 0.5 ETH\nBlockchain: EVM',
+          text: 'Your Solana Wallet:\nAddress: 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM\nBalance: 1.2 SOL\nBlockchain: Solana',
+          actions: ['CHECK_BALANCE'],
+        },
+      },
+    ],
+    [
+      {
+        name: '{{name1}}',
+        content: {
+          text: 'Show me my wallet',
+        },
+      },
+      {
+        name: '{{name2}}',
+        content: {
+          text: 'Your Solana Wallet:\nAddress: 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM\nBalance: 0.8 SOL\nBlockchain: Solana',
           actions: ['CHECK_BALANCE'],
         },
       },
