@@ -695,34 +695,59 @@ export const starterPlugin: Plugin = {
         if (value) process.env[key] = value;
       }
 
-      // Initialize the wallet service and create wallet (only if PRIVATE_KEY is valid)
-      // Use validatedConfig.PRIVATE_KEY if available, otherwise fall back to cleanedConfig.PRIVATE_KEY
+      // Initialize the wallet service and create wallet (only if PRIVATE_KEY or SOLANA_PRIVATE_KEY is valid)
+      // Prioritize PRIVATE_KEY (can be EVM or Solana), but also check SOLANA_PRIVATE_KEY
+      // Use validatedConfig values if available, otherwise fall back to cleanedConfig
       // This ensures we use the key even if validation had issues but the key looks valid
       const privateKeyToUse = validatedConfig.PRIVATE_KEY || cleanedConfig.PRIVATE_KEY;
+      const solanaPrivateKeyToUse = validatedConfig.SOLANA_PRIVATE_KEY || cleanedConfig.SOLANA_PRIVATE_KEY;
+      
+      // Use SOLANA_PRIVATE_KEY if PRIVATE_KEY is not available
+      const keyToUse = privateKeyToUse || solanaPrivateKeyToUse;
+      const isSolanaKey = !privateKeyToUse && !!solanaPrivateKeyToUse;
       
       const walletService = runtime.getService<WalletService>(WalletService.serviceType);
       logger.info({ 
         hasWalletService: !!walletService,
         hasValidatedPrivateKey: !!validatedConfig.PRIVATE_KEY,
         hasCleanedPrivateKey: !!cleanedConfig.PRIVATE_KEY,
-        hasPrivateKeyToUse: !!privateKeyToUse,
+        hasValidatedSolanaKey: !!validatedConfig.SOLANA_PRIVATE_KEY,
+        hasCleanedSolanaKey: !!cleanedConfig.SOLANA_PRIVATE_KEY,
+        hasKeyToUse: !!keyToUse,
+        isSolanaKey: isSolanaKey,
         validatedPrivateKeyLength: validatedConfig.PRIVATE_KEY?.length || 0,
         cleanedPrivateKeyLength: cleanedConfig.PRIVATE_KEY?.length || 0,
-        privateKeyToUseLength: privateKeyToUse?.length || 0,
-        privateKeyToUsePrefix: privateKeyToUse?.substring(0, 10) || 'none'
+        validatedSolanaKeyLength: validatedConfig.SOLANA_PRIVATE_KEY?.length || 0,
+        cleanedSolanaKeyLength: cleanedConfig.SOLANA_PRIVATE_KEY?.length || 0,
+        keyToUseLength: keyToUse?.length || 0,
+        keyToUsePrefix: keyToUse?.substring(0, 10) || 'none'
       }, '[plugin-trader] Checking wallet initialization conditions');
       
-      if (walletService && privateKeyToUse) {
+      if (walletService && keyToUse) {
         try {
-          logger.info('[plugin-trader] Initializing wallet from private key');
+          logger.info({ 
+            isSolanaKey,
+            keyLength: keyToUse.length,
+            keyPrefix: keyToUse.substring(0, 10)
+          }, '[plugin-trader] Initializing wallet from private key');
           
           // Create wallet - supports both EVM and Solana
           // The method auto-detects blockchain type if BLOCKCHAIN_TYPE is not provided
+          // If using SOLANA_PRIVATE_KEY, force blockchain type to 'solana'
+          const blockchainTypeToUse = isSolanaKey 
+            ? 'solana' 
+            : (validatedConfig.BLOCKCHAIN_TYPE || cleanedConfig.BLOCKCHAIN_TYPE as 'evm' | 'solana' | undefined);
+          
+          // Use SOLANA_RPC_URL if available and using Solana key, otherwise use RPC_URL
+          const rpcUrlToUse = isSolanaKey 
+            ? (validatedConfig.SOLANA_RPC_URL || cleanedConfig.SOLANA_RPC_URL || validatedConfig.RPC_URL || cleanedConfig.RPC_URL)
+            : (validatedConfig.RPC_URL || cleanedConfig.RPC_URL);
+          
           const walletAddress = await walletService.createWallet(
-            privateKeyToUse,
+            keyToUse,
             mainnet, // EVM chain (ignored for Solana)
-            validatedConfig.RPC_URL || cleanedConfig.RPC_URL,
-            validatedConfig.BLOCKCHAIN_TYPE || cleanedConfig.BLOCKCHAIN_TYPE as 'evm' | 'solana' | undefined, // Optional: force blockchain type
+            rpcUrlToUse,
+            blockchainTypeToUse, // Force 'solana' if using SOLANA_PRIVATE_KEY
             (validatedConfig.SOLANA_CLUSTER || cleanedConfig.SOLANA_CLUSTER) as 'mainnet-beta' | 'devnet' | 'testnet' // Solana cluster
           );
           
@@ -750,10 +775,13 @@ export const starterPlugin: Plugin = {
         logger.warn({ 
           hasWalletService: !!walletService,
           hasValidatedPrivateKey: !!validatedConfig.PRIVATE_KEY,
+          hasValidatedSolanaKey: !!validatedConfig.SOLANA_PRIVATE_KEY,
+          hasCleanedPrivateKey: !!cleanedConfig.PRIVATE_KEY,
+          hasCleanedSolanaKey: !!cleanedConfig.SOLANA_PRIVATE_KEY,
           validatedConfigKeys: Object.keys(validatedConfig),
           cleanedConfigKeys: Object.keys(cleanedConfig),
           mergedConfigKeys: Object.keys(mergedConfig)
-        }, '[plugin-trader] Wallet service not found or PRIVATE_KEY not provided. Wallet will not be initialized. Trading features will be limited.');
+        }, '[plugin-trader] Wallet service not found or PRIVATE_KEY/SOLANA_PRIVATE_KEY not provided. Wallet will not be initialized. Trading features will be limited.');
       }
       
       logger.info('[plugin-trader] Plugin initialization complete');
