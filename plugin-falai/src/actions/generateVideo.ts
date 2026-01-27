@@ -1,3 +1,4 @@
+/// <reference path="../@elizaos-core.d.ts" />
 import type {
   Action,
   ActionResult,
@@ -37,7 +38,7 @@ export const generateVideoAction: Action = {
 
     const text = message.content?.text?.toLowerCase() || '';
     const hasImage = message.content?.attachments?.some(
-      (att) => att.contentType === ContentType.IMAGE && att.url
+      (att: any) => att.contentType === ContentType.IMAGE && att.url
     );
 
     // Check for video generation keywords (expanded list)
@@ -112,14 +113,14 @@ export const generateVideoAction: Action = {
       if (message.content?.attachments && message.content.attachments.length > 0) {
         logger.debug({ attachments: message.content.attachments }, 'Found attachments in message.content');
         const imageAttachment = message.content.attachments.find(
-          (att) => att.contentType === ContentType.IMAGE && att.url
+          (att: any) => att.contentType === ContentType.IMAGE && att.url
         );
         if (imageAttachment?.url) {
           imageUrl = imageAttachment.url;
           logger.info({ imageUrl }, 'Found image in current message attachments');
         } else {
           // Try to find any attachment with a URL (might be mislabeled)
-          const anyAttachmentWithUrl = message.content.attachments.find((att) => att.url);
+          const anyAttachmentWithUrl = message.content.attachments.find((att: any) => att.url);
           if (anyAttachmentWithUrl?.url) {
             // Check if URL looks like an image
             if (/\.(jpg|jpeg|png|gif|webp|webm)/i.test(anyAttachmentWithUrl.url)) {
@@ -162,11 +163,11 @@ export const generateVideoAction: Action = {
         // Search in reverse order (most recent first)
         for (let i = responses.length - 1; i >= 0; i--) {
           const response = responses[i];
-          
+
           // Check attachments in previous responses
           if (response.content?.attachments) {
             const imageAttachment = response.content.attachments.find(
-              (att) => att.contentType === ContentType.IMAGE && att.url
+              (att: any) => att.contentType === ContentType.IMAGE && att.url
             );
             if (imageAttachment?.url) {
               imageUrl = imageAttachment.url;
@@ -228,7 +229,7 @@ export const generateVideoAction: Action = {
       if (!prompt || prompt.length < 3) {
         const words = text.toLowerCase().split(/\s+/);
         const videoKeywords = ['video', 'animate', 'animation', 'motion', 'generate', 'create', 'make', 'from', 'of', 'a', 'the'];
-        const filteredWords = words.filter(w => !videoKeywords.includes(w) && w.length > 2);
+        const filteredWords = words.filter((w: string) => !videoKeywords.includes(w) && w.length > 2);
         prompt = filteredWords.join(' ') || text.trim() || 'a cinematic scene';
       }
 

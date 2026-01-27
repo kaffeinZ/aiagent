@@ -1,3 +1,4 @@
+/// <reference path="../@elizaos-core.d.ts" />
 import type {
   Action,
   ActionResult,

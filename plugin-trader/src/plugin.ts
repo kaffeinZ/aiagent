@@ -1,3 +1,4 @@
+/// <reference path="./@elizaos-core.d.ts" />
 import type { Plugin } from '@elizaos/core';
 import {
   type Action,
@@ -619,6 +620,139 @@ export class StarterService extends Service {
   }
 }
 
+/**
+ * Helper: Merge plugin config with environment variables (env takes precedence)
+ */
+function mergeConfig(config: Record<string, string>): Record<string, string | undefined> {
+  return {
+    ...config,
+    PRIVATE_KEY: process.env.PRIVATE_KEY?.trim() || config.PRIVATE_KEY?.trim() || undefined,
+    BLOCKCHAIN_TYPE: process.env.BLOCKCHAIN_TYPE?.trim() || config.BLOCKCHAIN_TYPE?.trim() || undefined,
+    RPC_URL: process.env.RPC_URL?.trim() || config.RPC_URL?.trim() || undefined,
+    CHAIN: process.env.CHAIN?.trim() || config.CHAIN?.trim() || undefined,
+    SOLANA_CLUSTER: process.env.SOLANA_CLUSTER?.trim() || config.SOLANA_CLUSTER?.trim() || undefined,
+    SOLANA_PRIVATE_KEY: process.env.SOLANA_PRIVATE_KEY?.trim() || config.SOLANA_PRIVATE_KEY?.trim() || undefined,
+    SOLANA_RPC_URL: process.env.SOLANA_RPC_URL?.trim() || config.SOLANA_RPC_URL?.trim() || undefined,
+    EXAMPLE_PLUGIN_VARIABLE: process.env.EXAMPLE_PLUGIN_VARIABLE?.trim() || config.EXAMPLE_PLUGIN_VARIABLE?.trim() || undefined,
+  };
+}
+
+/**
+ * Helper: Remove empty/undefined values from config
+ */
+function cleanConfig(config: Record<string, string | undefined>): Record<string, string> {
+  const cleaned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (value !== undefined && value !== null && value.trim() !== '') {
+      cleaned[key] = value.trim();
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * Helper: Validate configuration with explicit error handling
+ */
+async function validateConfig(config: Record<string, string>): Promise<Record<string, any>> {
+  try {
+    const validated = await configSchema.parseAsync(config);
+    logger.info({ keys: Object.keys(validated) }, '[plugin-trader] Config validation successful');
+    return validated;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const errorMessages = error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      logger.warn({ errors: errorMessages }, '[plugin-trader] Config validation warnings');
+
+      // For wallet keys, allow graceful degradation
+      const hasWalletErrors = error.issues.some(issue =>
+        issue.path.includes('PRIVATE_KEY') || issue.path.includes('SOLANA_PRIVATE_KEY')
+      );
+
+      if (hasWalletErrors) {
+        logger.info('[plugin-trader] Wallet key validation issues - will continue without wallet');
+      }
+
+      // Return config as-is for non-critical errors
+      return config as any;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Helper: Initialize wallet if private key is available
+ */
+async function initializeWallet(
+  validatedConfig: Record<string, any>,
+  runtime: IAgentRuntime
+): Promise<void> {
+  const walletService = runtime.getService<WalletService>(WalletService.serviceType);
+  if (!walletService) {
+    logger.info('[plugin-trader] WalletService not available - skipping wallet init');
+    return;
+  }
+
+  // Determine which key to use (PRIVATE_KEY or SOLANA_PRIVATE_KEY)
+  const privateKey = validatedConfig.PRIVATE_KEY;
+  const solanaPrivateKey = validatedConfig.SOLANA_PRIVATE_KEY;
+  const keyToUse = privateKey || solanaPrivateKey;
+
+  if (!keyToUse) {
+    logger.info('[plugin-trader] No wallet keys configured - wallet features disabled');
+    return;
+  }
+
+  const isSolanaKey = !privateKey && !!solanaPrivateKey;
+  const blockchainType = isSolanaKey ? 'solana' : validatedConfig.BLOCKCHAIN_TYPE;
+  const rpcUrl = isSolanaKey
+    ? (validatedConfig.SOLANA_RPC_URL || validatedConfig.RPC_URL)
+    : validatedConfig.RPC_URL;
+
+  logger.info({
+    blockchainType: blockchainType || 'auto-detect',
+    hasRpcUrl: !!rpcUrl,
+    keyLength: keyToUse.length
+  }, '[plugin-trader] Initializing wallet');
+
+  try {
+    const walletAddress = await walletService.createWallet(
+      keyToUse,
+      mainnet, // EVM chain (ignored for Solana)
+      rpcUrl,
+      blockchainType,
+      validatedConfig.SOLANA_CLUSTER as 'mainnet-beta' | 'devnet' | 'testnet'
+    );
+
+    logger.info({
+      address: walletAddress,
+      blockchain: walletService.getBlockchainType()
+    }, '[plugin-trader] Wallet initialized successfully');
+
+    // Initialize trading service if EVM
+    if (walletService.getBlockchainType() === 'evm') {
+      await initializeTradingService(runtime, walletService);
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ error: errorMsg }, '[plugin-trader] Wallet initialization failed');
+    throw new Error(`Wallet initialization failed: ${errorMsg}`);
+  }
+}
+
+/**
+ * Helper: Initialize trading service with wallet
+ */
+async function initializeTradingService(
+  runtime: IAgentRuntime,
+  walletService: WalletService
+): Promise<void> {
+  const tradingService = runtime.getService<TradingService>(TradingService.serviceType);
+  if (tradingService) {
+    (tradingService as any).initialize(walletService);
+    logger.info('[plugin-trader] Trading service initialized');
+  }
+}
+
 export const starterPlugin: Plugin = {
   name: 'plugin-trader',
   description: 'Blockchain crypto trading plugin for elizaOS - enables on-chain trading via DEX',
@@ -633,208 +767,50 @@ export const starterPlugin: Plugin = {
     EXAMPLE_PLUGIN_VARIABLE: process.env.EXAMPLE_PLUGIN_VARIABLE?.trim() || undefined,
   },
   async init(config: Record<string, string>, runtime: IAgentRuntime) {
-    // Wrap entire init in try-catch to ensure it NEVER breaks the agent
     try {
-      logger.info('[plugin-trader] ===== PLUGIN INIT CALLED =====');
-      logger.info('[plugin-trader] Initializing plugin-trader');
-      logger.info({ 
-        configKeys: Object.keys(config),
-        configHasPrivateKey: !!config.PRIVATE_KEY,
-        envHasPrivateKey: !!process.env.PRIVATE_KEY,
-        envPrivateKeyLength: process.env.PRIVATE_KEY?.length || 0
-      }, '[plugin-trader] Init parameters');
-      
-      // Merge config with process.env (process.env takes precedence)
-      // This ensures .env file values are picked up even if config object was evaluated before .env was loaded
-      const mergedConfig: Record<string, string | undefined> = {
-        ...config,
-        // Override with process.env if available (these are loaded from .env file)
-        PRIVATE_KEY: process.env.PRIVATE_KEY?.trim() || config.PRIVATE_KEY?.trim() || undefined,
-        BLOCKCHAIN_TYPE: process.env.BLOCKCHAIN_TYPE?.trim() || config.BLOCKCHAIN_TYPE?.trim() || undefined,
-        RPC_URL: process.env.RPC_URL?.trim() || config.RPC_URL?.trim() || undefined,
-        CHAIN: process.env.CHAIN?.trim() || config.CHAIN?.trim() || undefined,
-        SOLANA_CLUSTER: process.env.SOLANA_CLUSTER?.trim() || config.SOLANA_CLUSTER?.trim() || undefined,
-        SOLANA_PRIVATE_KEY: process.env.SOLANA_PRIVATE_KEY?.trim() || config.SOLANA_PRIVATE_KEY?.trim() || undefined,
-        SOLANA_RPC_URL: process.env.SOLANA_RPC_URL?.trim() || config.SOLANA_RPC_URL?.trim() || undefined,
-        EXAMPLE_PLUGIN_VARIABLE: process.env.EXAMPLE_PLUGIN_VARIABLE?.trim() || config.EXAMPLE_PLUGIN_VARIABLE?.trim() || undefined,
-      };
-      
-      logger.info({ 
-        hasPrivateKey: !!mergedConfig.PRIVATE_KEY,
-        privateKeyLength: mergedConfig.PRIVATE_KEY?.length || 0,
-        privateKeyPrefix: mergedConfig.PRIVATE_KEY?.substring(0, 10) || 'none',
-        fromEnv: !!process.env.PRIVATE_KEY,
-        fromConfig: !!config.PRIVATE_KEY,
-        envPrivateKeyLength: process.env.PRIVATE_KEY?.length || 0,
-        envPrivateKeyPrefix: process.env.PRIVATE_KEY?.substring(0, 10) || 'none'
-      }, '[plugin-trader] Config received (merged with process.env)');
-      
-      // Filter out empty strings and undefined values before validation
-      const cleanedConfig: Record<string, string> = {};
-      for (const [key, value] of Object.entries(mergedConfig)) {
-        if (value !== undefined && value !== null && value.trim() !== '') {
-          cleanedConfig[key] = value.trim();
-        }
-      }
-      
-      logger.info({ 
-        cleanedConfigKeys: Object.keys(cleanedConfig),
-        hasPrivateKeyInCleaned: !!cleanedConfig.PRIVATE_KEY,
-        privateKeyInCleanedLength: cleanedConfig.PRIVATE_KEY?.length || 0,
-        privateKeyInCleanedPrefix: cleanedConfig.PRIVATE_KEY?.substring(0, 15) || 'none'
-      }, '[plugin-trader] Config cleaned for validation');
-      
-      // Validate config, but handle PRIVATE_KEY validation errors gracefully
-      let validatedConfig: Record<string, any>;
-      try {
-        validatedConfig = await configSchema.parseAsync(cleanedConfig);
-        logger.info({ 
-          validatedConfigKeys: Object.keys(validatedConfig),
-          hasPrivateKeyInValidated: !!validatedConfig.PRIVATE_KEY,
-          privateKeyInValidatedLength: validatedConfig.PRIVATE_KEY?.length || 0
-        }, '[plugin-trader] Config validation successful');
-      } catch (error) {
-        if (error instanceof z.ZodError) {
-          // Check if the error is specifically about PRIVATE_KEY
-          const privateKeyErrors = error.issues.filter(issue => issue.path.includes('PRIVATE_KEY'));
-          
-          if (privateKeyErrors.length > 0) {
-            // If PRIVATE_KEY is invalid, just log a warning and continue without it
-            logger.warn({ 
-              error: privateKeyErrors.map(e => e.message).join(', '),
-              privateKeyLength: cleanedConfig.PRIVATE_KEY?.length || 0,
-              privateKeyValue: cleanedConfig.PRIVATE_KEY?.substring(0, 20) + '...',
-              allErrors: error.issues.map(e => ({ path: e.path, message: e.message }))
-            }, '[plugin-trader] PRIVATE_KEY validation failed - plugin will continue without wallet initialization');
-            
-            // Remove PRIVATE_KEY from config and re-validate
-            const configWithoutKey = { ...cleanedConfig };
-            delete configWithoutKey.PRIVATE_KEY;
-            
-            try {
-              validatedConfig = await configSchema.parseAsync(configWithoutKey);
-              validatedConfig.PRIVATE_KEY = undefined; // Explicitly set to undefined
-            } catch (retryError) {
-              // If there are other validation errors, log them but don't fail
-              logger.warn({ error: retryError }, '[plugin-trader] Other config validation issues, continuing anyway');
-              validatedConfig = configWithoutKey as any;
-            }
-          } else {
-            // Other validation errors - log but don't fail
-            const errorMessages = error.issues?.map((e) => e.message)?.join(', ') || 'Unknown validation error';
-            logger.warn({ error: errorMessages }, '[plugin-trader] Configuration validation issues, continuing anyway');
-            validatedConfig = cleanedConfig as any;
-          }
-        } else {
-          // Non-Zod errors - log but continue
-          logger.warn({ error }, '[plugin-trader] Config validation error, continuing anyway');
-          validatedConfig = cleanedConfig as any;
-        }
-      }
+      logger.info('[plugin-trader] Initializing trader plugin');
 
-      // Set all environment variables at once (only if they exist)
+      // Step 1: Merge config with environment variables
+      const mergedConfig = mergeConfig(config);
+
+      // Step 2: Clean config (remove empty values)
+      const cleanedConfig = cleanConfig(mergedConfig);
+
+      logger.info({
+        configKeys: Object.keys(cleanedConfig),
+        hasPrivateKey: !!cleanedConfig.PRIVATE_KEY,
+        hasSolanaKey: !!cleanedConfig.SOLANA_PRIVATE_KEY
+      }, '[plugin-trader] Configuration prepared');
+
+      // Step 3: Validate configuration
+      const validatedConfig = await validateConfig(cleanedConfig);
+
+      // Step 4: Set environment variables for services to use
       for (const [key, value] of Object.entries(validatedConfig)) {
         if (value) process.env[key] = value;
       }
 
-      // Initialize the wallet service and create wallet (only if PRIVATE_KEY or SOLANA_PRIVATE_KEY is valid)
-      // Prioritize PRIVATE_KEY (can be EVM or Solana), but also check SOLANA_PRIVATE_KEY
-      // Use validatedConfig values if available, otherwise fall back to cleanedConfig
-      // This ensures we use the key even if validation had issues but the key looks valid
-      const privateKeyToUse = validatedConfig.PRIVATE_KEY || cleanedConfig.PRIVATE_KEY;
-      const solanaPrivateKeyToUse = validatedConfig.SOLANA_PRIVATE_KEY || cleanedConfig.SOLANA_PRIVATE_KEY;
-      
-      // Use SOLANA_PRIVATE_KEY if PRIVATE_KEY is not available
-      const keyToUse = privateKeyToUse || solanaPrivateKeyToUse;
-      const isSolanaKey = !privateKeyToUse && !!solanaPrivateKeyToUse;
-      
-      const walletService = runtime.getService<WalletService>(WalletService.serviceType);
-      logger.info({ 
-        hasWalletService: !!walletService,
-        hasValidatedPrivateKey: !!validatedConfig.PRIVATE_KEY,
-        hasCleanedPrivateKey: !!cleanedConfig.PRIVATE_KEY,
-        hasValidatedSolanaKey: !!validatedConfig.SOLANA_PRIVATE_KEY,
-        hasCleanedSolanaKey: !!cleanedConfig.SOLANA_PRIVATE_KEY,
-        hasKeyToUse: !!keyToUse,
-        isSolanaKey: isSolanaKey,
-        validatedPrivateKeyLength: validatedConfig.PRIVATE_KEY?.length || 0,
-        cleanedPrivateKeyLength: cleanedConfig.PRIVATE_KEY?.length || 0,
-        validatedSolanaKeyLength: validatedConfig.SOLANA_PRIVATE_KEY?.length || 0,
-        cleanedSolanaKeyLength: cleanedConfig.SOLANA_PRIVATE_KEY?.length || 0,
-        keyToUseLength: keyToUse?.length || 0,
-        keyToUsePrefix: keyToUse?.substring(0, 10) || 'none'
-      }, '[plugin-trader] Checking wallet initialization conditions');
-      
-      if (walletService && keyToUse) {
-        try {
-          logger.info({ 
-            isSolanaKey,
-            keyLength: keyToUse.length,
-            keyPrefix: keyToUse.substring(0, 10)
-          }, '[plugin-trader] Initializing wallet from private key');
-          
-          // Create wallet - supports both EVM and Solana
-          // The method auto-detects blockchain type if BLOCKCHAIN_TYPE is not provided
-          // If using SOLANA_PRIVATE_KEY, force blockchain type to 'solana'
-          const blockchainTypeToUse = isSolanaKey 
-            ? 'solana' 
-            : (validatedConfig.BLOCKCHAIN_TYPE || cleanedConfig.BLOCKCHAIN_TYPE as 'evm' | 'solana' | undefined);
-          
-          // Use SOLANA_RPC_URL if available and using Solana key, otherwise use RPC_URL
-          const rpcUrlToUse = isSolanaKey 
-            ? (validatedConfig.SOLANA_RPC_URL || cleanedConfig.SOLANA_RPC_URL || validatedConfig.RPC_URL || cleanedConfig.RPC_URL)
-            : (validatedConfig.RPC_URL || cleanedConfig.RPC_URL);
-          
-          const walletAddress = await walletService.createWallet(
-            keyToUse,
-            mainnet, // EVM chain (ignored for Solana)
-            rpcUrlToUse,
-            blockchainTypeToUse, // Force 'solana' if using SOLANA_PRIVATE_KEY
-            (validatedConfig.SOLANA_CLUSTER || cleanedConfig.SOLANA_CLUSTER) as 'mainnet-beta' | 'devnet' | 'testnet' // Solana cluster
-          );
-          
-          const blockchainType = walletService.getBlockchainType();
-          
-          logger.info({ 
-            address: walletAddress,
-            blockchainType: blockchainType,
-            chain: blockchainType === 'evm' ? validatedConfig.CHAIN : validatedConfig.SOLANA_CLUSTER,
-            rpcUrl: validatedConfig.RPC_URL || 'default'
-          }, '[plugin-trader] Wallet initialized successfully');
-
-          // Initialize trading service with wallet service
-          const tradingService = runtime.getService<TradingService>(TradingService.serviceType);
-          if (tradingService && blockchainType === 'evm') {
-            (tradingService as any).initialize(walletService);
-            logger.info('[plugin-trader] Trading service initialized');
-          }
-        } catch (walletError) {
-          logger.warn({ 
-            error: walletError instanceof Error ? walletError.message : String(walletError)
-          }, '[plugin-trader] Failed to initialize wallet - plugin will continue without wallet features');
-        }
-      } else {
-        logger.warn({ 
-          hasWalletService: !!walletService,
-          hasValidatedPrivateKey: !!validatedConfig.PRIVATE_KEY,
-          hasValidatedSolanaKey: !!validatedConfig.SOLANA_PRIVATE_KEY,
-          hasCleanedPrivateKey: !!cleanedConfig.PRIVATE_KEY,
-          hasCleanedSolanaKey: !!cleanedConfig.SOLANA_PRIVATE_KEY,
-          validatedConfigKeys: Object.keys(validatedConfig),
-          cleanedConfigKeys: Object.keys(cleanedConfig),
-          mergedConfigKeys: Object.keys(mergedConfig)
-        }, '[plugin-trader] Wallet service not found or PRIVATE_KEY/SOLANA_PRIVATE_KEY not provided. Wallet will not be initialized. Trading features will be limited.');
+      // Step 5: Initialize wallet if credentials are provided
+      try {
+        await initializeWallet(validatedConfig, runtime);
+      } catch (walletError) {
+        // Wallet errors are logged but don't fail the plugin
+        logger.warn(
+          { error: walletError instanceof Error ? walletError.message : String(walletError) },
+          '[plugin-trader] Wallet initialization failed - continuing without wallet'
+        );
       }
-      
+
       logger.info('[plugin-trader] Plugin initialization complete');
     } catch (error) {
-      // CRITICAL: Never throw - just log and continue
-      // This ensures the plugin can NEVER break the agent
-      logger.error({ 
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      }, '[plugin-trader] CRITICAL: Plugin initialization failed completely, but agent will continue');
-      // Do NOT re-throw - just return silently
+      // Log critical errors but don't break the agent
+      logger.error(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        },
+        '[plugin-trader] Plugin initialization failed'
+      );
     }
   },
   models: {

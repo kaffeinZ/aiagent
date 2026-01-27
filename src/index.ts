@@ -1,6 +1,5 @@
-// @ts-expect-error - Type definitions may be incomplete but runtime exports work
+/// <reference path="./@elizaos-core.d.ts" />
 import { logger } from '@elizaos/core';
-// @ts-expect-error - Type definitions may be incomplete but runtime exports work
 import type { IAgentRuntime, Project, ProjectAgent } from '@elizaos/core';
 import starterPlugin from './plugin.ts';
 import { character } from './character.ts';

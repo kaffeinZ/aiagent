@@ -1,3 +1,4 @@
+/// <reference path="./@elizaos-core.d.ts" />
 import { Service, logger } from '@elizaos/core';
 
 /**
@@ -16,13 +17,22 @@ export interface PriceData {
 }
 
 /**
+ * Cached price data with timestamp
+ */
+interface CachedPriceData {
+  data: PriceData;
+  cachedAt: number;
+}
+
+/**
  * Service for fetching cryptocurrency prices from CoinGecko and CoinMarketCap APIs
+ * Includes in-memory caching to reduce API calls and improve performance
  */
 export class PriceFeedService extends Service {
   static override serviceType = 'pricefeed';
 
   override capabilityDescription =
-    'Fetches real-time cryptocurrency prices from CoinGecko and CoinMarketCap APIs.';
+    'Fetches real-time cryptocurrency prices from CoinGecko and CoinMarketCap APIs with intelligent caching.';
 
   private coingeckoBaseUrl = 'https://api.coingecko.com/api/v3';
   private coinmarketcapBaseUrl = 'https://pro-api.coinmarketcap.com/v1';
@@ -30,14 +40,27 @@ export class PriceFeedService extends Service {
   private rateLimitDelay = 2000; // 2 second delay between requests to respect rate limits (CoinGecko free tier: 10-50 calls/minute)
   private lastRequestTime = 0;
 
+  // Cache configuration
+  private readonly CACHE_TTL = 60000; // Cache TTL: 60 seconds (1 minute)
+  private priceCache = new Map<string, CachedPriceData>(); // In-memory cache: symbol -> cached price data
+  private cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
+
   constructor(runtime: any) {
     super(runtime);
     this.coinmarketcapApiKey = process.env.COINMARKETCAP_API_KEY?.trim();
   }
 
   static override async start(runtime: any): Promise<Service> {
-    logger.info('Starting PriceFeedService');
+    logger.info('Starting PriceFeedService with caching enabled');
     const service = new PriceFeedService(runtime);
+
+    // Start cache cleanup interval (run every 5 minutes)
+    service.cacheCleanupInterval = setInterval(() => {
+      service.cleanupExpiredCache();
+    }, 5 * 60 * 1000); // 5 minutes
+
+    logger.info({ cacheTTL: service.CACHE_TTL / 1000 + 's' }, 'PriceFeedService cache initialized');
+
     return service;
   }
 
@@ -53,7 +76,91 @@ export class PriceFeedService extends Service {
   }
 
   override async stop(): Promise<void> {
+    logger.info('Stopping PriceFeedService and clearing cache');
+
+    // Clear cache cleanup interval
+    if (this.cacheCleanupInterval) {
+      clearInterval(this.cacheCleanupInterval);
+      this.cacheCleanupInterval = null;
+    }
+
+    // Clear price cache
+    this.priceCache.clear();
+
     logger.info('PriceFeedService stopped');
+  }
+
+  /**
+   * Get cached price data if available and not expired
+   * @param symbol - Normalized symbol to check
+   * @returns Cached price data or null if not found/expired
+   */
+  private getCachedPrice(symbol: string): PriceData | null {
+    const cached = this.priceCache.get(symbol);
+
+    if (!cached) {
+      return null;
+    }
+
+    const now = Date.now();
+    const age = now - cached.cachedAt;
+
+    // Check if cache is still valid
+    if (age < this.CACHE_TTL) {
+      logger.debug({
+        symbol,
+        age: Math.round(age / 1000) + 's',
+        ttl: this.CACHE_TTL / 1000 + 's'
+      }, 'Cache hit - returning cached price');
+      return cached.data;
+    }
+
+    // Cache expired - remove it
+    this.priceCache.delete(symbol);
+    logger.debug({ symbol }, 'Cache expired - will fetch fresh data');
+    return null;
+  }
+
+  /**
+   * Store price data in cache
+   * @param symbol - Normalized symbol
+   * @param data - Price data to cache
+   */
+  private setCachedPrice(symbol: string, data: PriceData): void {
+    this.priceCache.set(symbol, {
+      data,
+      cachedAt: Date.now(),
+    });
+
+    logger.debug({
+      symbol,
+      price: data.price,
+      cacheSize: this.priceCache.size
+    }, 'Price data cached');
+  }
+
+  /**
+   * Clean up expired cache entries to prevent memory leaks
+   * Called periodically by cleanup interval
+   */
+  private cleanupExpiredCache(): void {
+    const now = Date.now();
+    let removedCount = 0;
+
+    for (const [symbol, cached] of this.priceCache.entries()) {
+      const age = now - cached.cachedAt;
+      if (age >= this.CACHE_TTL) {
+        this.priceCache.delete(symbol);
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      logger.debug({
+        removedCount,
+        remainingSize: this.priceCache.size
+      }, 'Cache cleanup completed');
+    }
   }
 
   /**
@@ -336,14 +443,27 @@ export class PriceFeedService extends Service {
 
   /**
    * Get price for a single cryptocurrency
-   * Tries CoinGecko first (free, no API key), then CoinMarketCap if available
+   * Checks cache first, then tries CoinGecko first (free, no API key), then CoinMarketCap if available
+   * Caches successful results for improved performance
    */
   async getPrice(symbol: string): Promise<PriceData | null> {
-    logger.info({ symbol }, 'Fetching price');
+    // Normalize symbol for consistent cache keys
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+
+    // Check cache first
+    const cachedPrice = this.getCachedPrice(normalizedSymbol);
+    if (cachedPrice) {
+      logger.info({ symbol, normalizedSymbol }, 'Returning cached price');
+      return cachedPrice;
+    }
+
+    logger.info({ symbol, normalizedSymbol }, 'Cache miss - fetching fresh price');
 
     // Try CoinGecko first (free, no API key required)
     const coingeckoPrice = await this.fetchFromCoinGecko(symbol);
     if (coingeckoPrice) {
+      // Cache the result
+      this.setCachedPrice(normalizedSymbol, coingeckoPrice);
       return coingeckoPrice;
     }
 
@@ -351,32 +471,60 @@ export class PriceFeedService extends Service {
     if (this.coinmarketcapApiKey) {
       const cmcPrice = await this.fetchFromCoinMarketCap(symbol);
       if (cmcPrice) {
+        // Cache the result
+        this.setCachedPrice(normalizedSymbol, cmcPrice);
         return cmcPrice;
       }
     }
 
-    logger.warn({ symbol }, 'Failed to fetch price from all sources');
+    logger.warn({ symbol, normalizedSymbol }, 'Failed to fetch price from all sources');
     return null;
   }
 
   /**
    * Get prices for multiple cryptocurrencies
-   * Uses CoinGecko's batch endpoint for efficiency
+   * Checks cache first, then uses CoinGecko's batch endpoint for efficiency
+   * Caches all successful results
    */
   async getMultiplePrices(symbols: string[]): Promise<PriceData[]> {
     logger.info({ count: symbols.length }, 'Fetching multiple prices');
 
     const results: PriceData[] = [];
+    const uncachedSymbols: string[] = [];
 
-    // CoinGecko supports batch requests
+    // Check cache for each symbol first
+    for (const symbol of symbols) {
+      const normalizedSymbol = this.normalizeSymbol(symbol);
+      const cachedPrice = this.getCachedPrice(normalizedSymbol);
+
+      if (cachedPrice) {
+        results.push(cachedPrice);
+      } else {
+        uncachedSymbols.push(symbol);
+      }
+    }
+
+    logger.info({
+      total: symbols.length,
+      cached: results.length,
+      uncached: uncachedSymbols.length
+    }, 'Cache check completed');
+
+    // If all prices are cached, return immediately
+    if (uncachedSymbols.length === 0) {
+      logger.info('All prices served from cache');
+      return results;
+    }
+
+    // Fetch uncached symbols from CoinGecko batch endpoint
     try {
       await this.rateLimit();
 
-      const normalizedSymbols = symbols.map((s) => this.normalizeSymbol(s));
+      const normalizedSymbols = uncachedSymbols.map((s) => this.normalizeSymbol(s));
       const ids = normalizedSymbols.join(',');
       const url = `${this.coingeckoBaseUrl}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`;
 
-      logger.debug({ url, symbols }, 'Fetching batch prices from CoinGecko');
+      logger.debug({ url, symbols: uncachedSymbols }, 'Fetching batch prices from CoinGecko');
 
       // Add cache-busting to ensure fresh data
       const urlWithCacheBuster = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
@@ -396,7 +544,7 @@ export class PriceFeedService extends Service {
         for (const symbol of normalizedSymbols) {
           const coinData = data[symbol];
           if (coinData) {
-            results.push({
+            const priceData: PriceData = {
               symbol,
               name: symbol,
               price: coinData.usd || 0,
@@ -406,7 +554,12 @@ export class PriceFeedService extends Service {
               volume24h: coinData.usd_24h_vol || undefined,
               source: 'coingecko',
               timestamp: Date.now(),
-            });
+            };
+
+            // Cache the result
+            this.setCachedPrice(symbol, priceData);
+
+            results.push(priceData);
           }
         }
       }
@@ -415,10 +568,18 @@ export class PriceFeedService extends Service {
     }
 
     // If CoinGecko fails or returns incomplete results, try individual fetches
-    if (results.length < symbols.length) {
+    // Check against total expected results (including cached)
+    const totalExpected = symbols.length;
+    if (results.length < totalExpected) {
       const missingSymbols = symbols.filter(
         (s) => !results.find((r) => r.symbol === this.normalizeSymbol(s))
       );
+
+      logger.debug({
+        total: totalExpected,
+        fetched: results.length,
+        missing: missingSymbols.length
+      }, 'Some prices missing, trying individual fetches');
 
       for (const symbol of missingSymbols) {
         const price = await this.getPrice(symbol);

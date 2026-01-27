@@ -1,3 +1,4 @@
+/// <reference path="./@elizaos-core.d.ts" />
 import { Service, logger, type IAgentRuntime } from '@elizaos/core';
 import { 
   createWalletClient, 

@@ -1,3 +1,4 @@
+/// <reference path="../@elizaos-core.d.ts" />
 import { Service, logger } from '@elizaos/core';
 import type { IAgentRuntime } from '@elizaos/core';
 import { fal } from '@fal-ai/client';

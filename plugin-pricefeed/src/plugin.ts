@@ -1,3 +1,4 @@
+/// <reference path="./@elizaos-core.d.ts" />
 import type { Plugin } from '@elizaos/core';
 import {
   type Action,
