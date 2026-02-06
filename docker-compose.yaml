@@ -23,14 +23,8 @@ services:
     image: ${DOCKER_IMAGE}
     container_name: elizaos
     environment:
-      # Core AI providers (at least one required)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-
-      # Database (required for production)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - POSTGRES_URL=${POSTGRES_URL}
-
-      # Server configuration
       - SERVER_PORT=${SERVER_PORT:-3000}
       - ELIZA_UI_ENABLE=${ELIZA_UI_ENABLE:-true}
       - NODE_ENV=${NODE_ENV:-production}

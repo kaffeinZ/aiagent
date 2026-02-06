@@ -16,16 +16,8 @@ export const character: Character = {
     // Core plugins first
     '@elizaos/plugin-sql', '@elizaos/plugin-pdf',
 
-    // Text-only plugins (no embedding support)
-    ...(process.env.ANTHROPIC_API_KEY?.trim() ? ['@elizaos/plugin-anthropic'] : []),
+    // LLM provider (OpenRouter only)
     ...(process.env.OPENROUTER_API_KEY?.trim() ? ['@elizaos/plugin-openrouter'] : []),
-
-    // Embedding-capable plugins (optional, based on available credentials)
-    ...(process.env.OPENAI_API_KEY?.trim() ? ['@elizaos/plugin-openai'] : []),
-    ...(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ? ['@elizaos/plugin-google-genai'] : []),
-
-    // Ollama as fallback (only if no main LLM providers are configured)
-    ...(process.env.OLLAMA_API_ENDPOINT?.trim() ? ['@elizaos/plugin-ollama'] : []),
 
     // Platform plugins
     ...(process.env.DISCORD_API_TOKEN?.trim() ? ['@elizaos/plugin-discord'] : []),
@@ -54,7 +46,7 @@ export const character: Character = {
   "settings": {
     "secrets": {},
     "avatar": "https://elizaos.github.io/eliza-avatars/Eliza/portrait.png",
-    "model": "openrouter/anthropic/claude-3-opus",
+    "model": process.env.OPENROUTER_MODEL?.trim() || "openrouter/anthropic/claude-sonnet-4.5",
     "embeddingModel": "nomic-embed-text"
   },
   system:
