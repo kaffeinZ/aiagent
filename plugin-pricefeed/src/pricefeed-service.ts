@@ -45,6 +45,10 @@ export class PriceFeedService extends Service {
   private priceCache = new Map<string, CachedPriceData>(); // In-memory cache: symbol -> cached price data
   private cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
+  // CoinGecko coin ID lookup cache (long-lived, coin IDs rarely change)
+  private coinIdCache = new Map<string, string>(); // symbol/name -> coingecko ID
+  private coinListLoaded = false;
+
   constructor(runtime: any) {
     super(runtime);
     this.coinmarketcapApiKey = process.env.COINMARKETCAP_API_KEY?.trim();
@@ -178,13 +182,101 @@ export class PriceFeedService extends Service {
   }
 
   /**
-   * Normalize cryptocurrency symbol (e.g., BTC, btc, bitcoin -> bitcoin)
-   * Maps common names to CoinGecko IDs
+   * Load the full CoinGecko coin list for dynamic lookup.
+   * Called once on first unknown token, then cached in memory.
    */
-  private normalizeSymbol(symbol: string): string {
+  private async loadCoinList(): Promise<void> {
+    if (this.coinListLoaded) return;
+
+    try {
+      await this.rateLimit();
+      const response = await fetch(`${this.coingeckoBaseUrl}/coins/list`, {
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.ok) {
+        logger.warn({ status: response.status }, 'Failed to load CoinGecko coin list');
+        return;
+      }
+
+      const coins: Array<{ id: string; symbol: string; name: string }> = await response.json();
+
+      for (const coin of coins) {
+        // Map by symbol (lowercase) — prefer higher market cap coins (listed first by CoinGecko)
+        const sym = coin.symbol.toLowerCase();
+        if (!this.coinIdCache.has(sym)) {
+          this.coinIdCache.set(sym, coin.id);
+        }
+        // Also map by full name
+        const name = coin.name.toLowerCase();
+        if (!this.coinIdCache.has(name)) {
+          this.coinIdCache.set(name, coin.id);
+        }
+        // Map by ID itself
+        this.coinIdCache.set(coin.id, coin.id);
+      }
+
+      this.coinListLoaded = true;
+      logger.info({ coinCount: coins.length }, 'CoinGecko coin list loaded for dynamic lookup');
+    } catch (error) {
+      logger.error({ error }, 'Error loading CoinGecko coin list');
+    }
+  }
+
+  /**
+   * Search CoinGecko for a token by name/symbol.
+   * Uses the search API for fuzzy matching when the coin list doesn't have an exact match.
+   */
+  async searchCoin(query: string): Promise<{ id: string; name: string; symbol: string; marketCapRank: number | null } | null> {
+    try {
+      await this.rateLimit();
+      const response = await fetch(
+        `${this.coingeckoBaseUrl}/search?query=${encodeURIComponent(query)}`,
+        { headers: { Accept: 'application/json' } }
+      );
+
+      if (!response.ok) {
+        logger.warn({ status: response.status, query }, 'CoinGecko search failed');
+        return null;
+      }
+
+      const data = await response.json();
+      const coins = data.coins;
+
+      if (!coins || coins.length === 0) {
+        return null;
+      }
+
+      // Return the top result (highest relevance)
+      const top = coins[0];
+      const result = {
+        id: top.id,
+        name: top.name,
+        symbol: top.symbol,
+        marketCapRank: top.market_cap_rank || null,
+      };
+
+      // Cache for future lookups
+      this.coinIdCache.set(top.symbol.toLowerCase(), top.id);
+      this.coinIdCache.set(top.name.toLowerCase(), top.id);
+      this.coinIdCache.set(top.id, top.id);
+
+      logger.info({ query, found: result }, 'CoinGecko search result');
+      return result;
+    } catch (error) {
+      logger.error({ error, query }, 'Error searching CoinGecko');
+      return null;
+    }
+  }
+
+  /**
+   * Normalize cryptocurrency symbol (e.g., BTC, btc, bitcoin -> bitcoin)
+   * Maps common names to CoinGecko IDs, with dynamic lookup fallback
+   */
+  normalizeSymbol(symbol: string): string {
     const normalized = symbol.toLowerCase().trim();
-    
-    // Map common names to CoinGecko IDs
+
+    // Map common names to CoinGecko IDs (fast path for popular tokens)
     const symbolMap: Record<string, string> = {
       'solana': 'solana',
       'sol': 'solana',
@@ -217,23 +309,61 @@ export class PriceFeedService extends Service {
       'usdc': 'usd-coin',
       'usdt': 'tether',
     };
-    
-    return symbolMap[normalized] || normalized;
+
+    if (symbolMap[normalized]) {
+      return symbolMap[normalized];
+    }
+
+    // Check the dynamic coin ID cache (populated from CoinGecko coin list)
+    if (this.coinIdCache.has(normalized)) {
+      return this.coinIdCache.get(normalized)!;
+    }
+
+    return normalized;
+  }
+
+  /**
+   * Resolve any token input to a CoinGecko ID.
+   * Tries: hardcoded map → coin list cache → CoinGecko search API
+   */
+  async resolveTokenId(input: string): Promise<string> {
+    const normalized = this.normalizeSymbol(input);
+
+    // If the normalized result is different from input, we found it in hardcoded or cache
+    if (normalized !== input.toLowerCase().trim()) {
+      return normalized;
+    }
+
+    // Try loading the full coin list first
+    if (!this.coinListLoaded) {
+      await this.loadCoinList();
+      const fromList = this.coinIdCache.get(input.toLowerCase().trim());
+      if (fromList) return fromList;
+    }
+
+    // Last resort: search API (fuzzy match)
+    const searchResult = await this.searchCoin(input);
+    if (searchResult) {
+      return searchResult.id;
+    }
+
+    // Return as-is and let the API call fail gracefully
+    return normalized;
   }
 
   /**
    * Fetch price from CoinGecko (free tier, no API key required)
    */
   private async fetchFromCoinGecko(
-    symbol: string
+    coinId: string
   ): Promise<PriceData | null> {
     try {
       await this.rateLimit();
 
-      const normalizedSymbol = this.normalizeSymbol(symbol);
+      const normalizedSymbol = coinId;
       const url = `${this.coingeckoBaseUrl}/simple/price?ids=${normalizedSymbol}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`;
 
-      logger.debug({ url, symbol }, 'Fetching price from CoinGecko');
+      logger.debug({ url, coinId }, 'Fetching price from CoinGecko');
 
       // Add cache-busting to ensure fresh data
       const urlWithCacheBuster = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
@@ -251,7 +381,7 @@ export class PriceFeedService extends Service {
         // Handle rate limiting (429) with a more informative message
         if (response.status === 429) {
           logger.warn(
-            { status: response.status, symbol },
+            { status: response.status, coinId },
             'CoinGecko API rate limit exceeded - will retry with longer delay'
           );
           // Increase delay for next request
@@ -259,12 +389,12 @@ export class PriceFeedService extends Service {
           return null;
         }
         logger.warn(
-          { status: response.status, symbol },
+          { status: response.status, coinId },
           'CoinGecko API request failed'
         );
         return null;
       }
-      
+
       // Reset rate limit delay on success
       if (this.rateLimitDelay > 2000) {
         this.rateLimitDelay = 2000;
@@ -275,7 +405,7 @@ export class PriceFeedService extends Service {
       // CoinGecko returns data with coin ID as key
       const coinData = data[normalizedSymbol];
       if (!coinData) {
-        logger.warn({ symbol, data }, 'Coin not found in CoinGecko response');
+        logger.warn({ coinId, data }, 'Coin not found in CoinGecko response');
         return null;
       }
 
@@ -290,17 +420,17 @@ export class PriceFeedService extends Service {
         source: 'coingecko' as const,
         timestamp: Date.now(),
       };
-      
-      logger.info({ 
-        symbol, 
-        price: priceData.price, 
+
+      logger.info({
+        coinId,
+        price: priceData.price,
         timestamp: new Date(priceData.timestamp).toISOString(),
         fetchedAt: new Date().toISOString()
       }, 'Fetched fresh price data from CoinGecko');
-      
+
       return priceData;
     } catch (error) {
-      logger.error({ error, symbol }, 'Error fetching from CoinGecko');
+      logger.error({ error, coinId }, 'Error fetching from CoinGecko');
       return null;
     }
   }
@@ -447,23 +577,22 @@ export class PriceFeedService extends Service {
    * Caches successful results for improved performance
    */
   async getPrice(symbol: string): Promise<PriceData | null> {
-    // Normalize symbol for consistent cache keys
-    const normalizedSymbol = this.normalizeSymbol(symbol);
+    // Resolve to CoinGecko ID (uses hardcoded map, coin list, then search API)
+    const resolvedId = await this.resolveTokenId(symbol);
 
     // Check cache first
-    const cachedPrice = this.getCachedPrice(normalizedSymbol);
+    const cachedPrice = this.getCachedPrice(resolvedId);
     if (cachedPrice) {
-      logger.info({ symbol, normalizedSymbol }, 'Returning cached price');
+      logger.info({ symbol, resolvedId }, 'Returning cached price');
       return cachedPrice;
     }
 
-    logger.info({ symbol, normalizedSymbol }, 'Cache miss - fetching fresh price');
+    logger.info({ symbol, resolvedId }, 'Cache miss - fetching fresh price');
 
     // Try CoinGecko first (free, no API key required)
-    const coingeckoPrice = await this.fetchFromCoinGecko(symbol);
+    const coingeckoPrice = await this.fetchFromCoinGecko(resolvedId);
     if (coingeckoPrice) {
-      // Cache the result
-      this.setCachedPrice(normalizedSymbol, coingeckoPrice);
+      this.setCachedPrice(resolvedId, coingeckoPrice);
       return coingeckoPrice;
     }
 
@@ -471,13 +600,12 @@ export class PriceFeedService extends Service {
     if (this.coinmarketcapApiKey) {
       const cmcPrice = await this.fetchFromCoinMarketCap(symbol);
       if (cmcPrice) {
-        // Cache the result
-        this.setCachedPrice(normalizedSymbol, cmcPrice);
+        this.setCachedPrice(resolvedId, cmcPrice);
         return cmcPrice;
       }
     }
 
-    logger.warn({ symbol, normalizedSymbol }, 'Failed to fetch price from all sources');
+    logger.warn({ symbol, resolvedId }, 'Failed to fetch price from all sources');
     return null;
   }
 

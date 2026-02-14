@@ -61,37 +61,100 @@ export const currentDataProvider: Provider = {
         };
       }
 
-      // Extract crypto mentions for targeted search
-      const cryptoMentions = [];
-      const coinMap = {
-        'btc': 'Bitcoin',
-        'bitcoin': 'Bitcoin',
-        'eth': 'Ethereum',
-        'ethereum': 'Ethereum',
-        'sol': 'Solana',
-        'solana': 'Solana',
-        'ada': 'Cardano',
-        'bnb': 'BNB',
-        'xrp': 'XRP',
-        'doge': 'Dogecoin',
+      // Extract crypto mentions from the message (detect ANY token name/symbol)
+      const cryptoMentions: string[] = [];
+
+      // Common token map for fast matching
+      const coinMap: Record<string, string> = {
+        'btc': 'Bitcoin', 'bitcoin': 'Bitcoin',
+        'eth': 'Ethereum', 'ethereum': 'Ethereum',
+        'sol': 'Solana', 'solana': 'Solana',
+        'ada': 'Cardano', 'cardano': 'Cardano',
+        'bnb': 'BNB', 'binancecoin': 'BNB',
+        'xrp': 'XRP', 'ripple': 'XRP',
+        'doge': 'Dogecoin', 'dogecoin': 'Dogecoin',
+        'dot': 'Polkadot', 'polkadot': 'Polkadot',
+        'avax': 'Avalanche', 'avalanche': 'Avalanche',
+        'matic': 'Polygon', 'polygon': 'Polygon',
+        'link': 'Chainlink', 'chainlink': 'Chainlink',
+        'ltc': 'Litecoin', 'litecoin': 'Litecoin',
+        'uni': 'Uniswap', 'uniswap': 'Uniswap',
+        'atom': 'Cosmos', 'cosmos': 'Cosmos',
       };
 
       for (const [key, name] of Object.entries(coinMap)) {
-        if (text.includes(key)) {
+        if (text.includes(key) && !cryptoMentions.includes(name)) {
           cryptoMentions.push(name);
         }
       }
 
+      // Detect unknown tokens: extract capitalized words or $ prefixed tokens
+      // e.g., "what about PEPE" or "analyze $WIF" or "how is render doing"
+      const words = message.content.text.split(/\s+/);
+      const unknownTokens: string[] = [];
+      for (const word of words) {
+        const cleaned = word.replace(/[^a-zA-Z0-9$]/g, '');
+        // $TOKEN pattern
+        if (cleaned.startsWith('$') && cleaned.length > 1) {
+          const token = cleaned.slice(1);
+          if (!coinMap[token.toLowerCase()]) {
+            unknownTokens.push(token);
+          }
+        }
+        // ALL CAPS token (3-10 chars, not common words)
+        else if (/^[A-Z]{3,10}$/.test(cleaned) && !['THE', 'AND', 'FOR', 'ARE', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN', 'HER', 'WAS', 'ONE', 'OUR', 'OUT', 'HAS', 'HOW', 'WHO', 'WHAT', 'WHEN', 'WHERE', 'WHY', 'THIS', 'THAT', 'WITH', 'FROM', 'WILL', 'ABOUT', 'NFA', 'DYOR'].includes(cleaned)) {
+          if (!coinMap[cleaned.toLowerCase()]) {
+            unknownTokens.push(cleaned);
+          }
+        }
+      }
+
+      // Fetch structured price data from PriceFeedService for all detected tokens
+      let priceDataText = '';
+      const priceFeedService = runtime.getService<any>('pricefeed');
+
+      if (priceFeedService) {
+        const allTokens = [
+          ...cryptoMentions.map(name => {
+            // Reverse lookup to get the symbol
+            const entry = Object.entries(coinMap).find(([, v]) => v === name);
+            return entry ? entry[0] : name;
+          }),
+          ...unknownTokens,
+        ];
+
+        // Deduplicate
+        const uniqueTokens = [...new Set(allTokens)];
+
+        if (uniqueTokens.length > 0) {
+          logger.info({ tokens: uniqueTokens }, 'Fetching price data from CoinGecko/CoinMarketCap');
+
+          const priceResults = [];
+          for (const token of uniqueTokens.slice(0, 5)) { // Max 5 tokens per query
+            try {
+              const price = await priceFeedService.getPrice(token);
+              if (price) {
+                priceResults.push(priceFeedService.formatPriceData(price));
+              }
+            } catch (err) {
+              logger.debug({ token, err }, 'Price fetch failed for token');
+            }
+          }
+
+          if (priceResults.length > 0) {
+            priceDataText = `\n\n💰 LIVE PRICE DATA (CoinGecko/CoinMarketCap):\n${priceResults.join('\n\n')}`;
+          }
+        }
+      }
+
       // Build search query
+      const allMentions = [...cryptoMentions, ...unknownTokens];
       let searchQuery: string;
-      if (cryptoMentions.length > 0) {
-        // Specific crypto mentioned
-        searchQuery = `${cryptoMentions[0]} cryptocurrency price today ${new Date().toISOString().split('T')[0]}`;
+      if (allMentions.length > 0) {
+        searchQuery = `${allMentions.slice(0, 3).join(' ')} cryptocurrency price analysis today ${new Date().toISOString().split('T')[0]}`;
       } else if (text.includes('market')) {
-        // General market query
         searchQuery = `cryptocurrency market today ${new Date().toISOString().split('T')[0]}`;
       } else {
-        // Extract the user's question for a more targeted search
         const questionMatch = text.match(/what|how|why|when|where|analyze|tell|explain/);
         if (questionMatch) {
           searchQuery = `${text.slice(0, 100)} cryptocurrency today`;
@@ -103,51 +166,56 @@ export const currentDataProvider: Provider = {
       logger.info(`🔍 Searching: "${searchQuery}"`);
 
       // Execute search with finance-optimized settings
-      const searchResults = await tavilyService.search(searchQuery, {
-        topic: 'finance',
-        search_depth: 'advanced',
-        max_results: 5,
-        time_range: 'day', // Only today's data
-        include_answer: 'advanced',
-        include_domains: [
-          'coingecko.com',
-          'coinmarketcap.com',
-          'cryptonews.com',
-          'cointelegraph.com',
-          'decrypt.co',
-          'theblock.co',
-        ],
-      });
+      let searchResults: any = null;
+      try {
+        searchResults = await tavilyService.search(searchQuery, {
+          topic: 'finance',
+          search_depth: 'advanced',
+          max_results: 5,
+          time_range: 'day',
+          include_answer: 'advanced',
+          include_domains: [
+            'coingecko.com',
+            'coinmarketcap.com',
+            'cryptonews.com',
+            'cointelegraph.com',
+            'decrypt.co',
+            'theblock.co',
+          ],
+        });
+      } catch (searchError) {
+        logger.warn({ error: searchError }, 'Web search failed, continuing with price data only');
+      }
 
-      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
-        logger.warn('⚠️ CURRENT_DATA_PROVIDER: No search results found');
+      // If both sources failed, report it
+      if ((!searchResults || !searchResults.results || searchResults.results.length === 0) && !priceDataText) {
+        logger.warn('⚠️ CURRENT_DATA_PROVIDER: No data from any source');
         return {
-          text: '⚠️ WARNING: Could not fetch current data from web search. Results may be outdated.',
-          values: {
-            dataFreshness: 'failed',
-            warning: true,
-          },
+          text: '⚠️ WARNING: Could not fetch current data. Results may be outdated.',
+          values: { dataFreshness: 'failed', warning: true },
           data: {},
         };
       }
 
-      // Format results for context injection
-      const formattedResults = searchResults.results
-        .slice(0, 3)
-        .map((result: any, i: number) => {
-          return `**Source ${i + 1}: ${result.title}** (${result.url})
+      // Format web search results
+      let formattedResults = '';
+      if (searchResults?.results?.length > 0) {
+        formattedResults = searchResults.results
+          .slice(0, 3)
+          .map((result: any, i: number) => {
+            return `**Source ${i + 1}: ${result.title}** (${result.url})
 ${result.content}
 ${result.publishedDate ? `Published: ${result.publishedDate}` : ''}`;
-        })
-        .join('\n\n---\n\n');
+          })
+          .join('\n\n---\n\n');
+      }
 
       const contextText = `
 📊 CURRENT DATA (Retrieved ${new Date().toISOString()}):
+${priceDataText}
 
-${searchResults.answer ? `**Summary:** ${searchResults.answer}\n\n` : ''}
-
-**Sources:**
-${formattedResults}
+${searchResults?.answer ? `**Summary:** ${searchResults.answer}\n\n` : ''}
+${formattedResults ? `**Sources:**\n${formattedResults}` : ''}
 
 ⚠️ INSTRUCTION TO AGENT: You MUST use this current data above in your response. DO NOT use training data. Cite these sources.
 `;

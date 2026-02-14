@@ -23,7 +23,8 @@ export const character: Character = {
 
     // Platform plugins
     ...(process.env.DISCORD_API_TOKEN?.trim() ? ['@elizaos/plugin-discord'] : []),
-    ...(process.env.TWITTER_API_KEY?.trim() &&
+    ...(process.env.TWITTER_ENABLED !== 'false' &&
+    process.env.TWITTER_API_KEY?.trim() &&
     process.env.TWITTER_API_SECRET_KEY?.trim() &&
     process.env.TWITTER_ACCESS_TOKEN?.trim() &&
     process.env.TWITTER_ACCESS_TOKEN_SECRET?.trim()
